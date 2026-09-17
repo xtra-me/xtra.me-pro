@@ -10,6 +10,15 @@ from groq import Groq
 
 app = FastAPI(title="Team Project App API")
 
+from fastapi.middleware.cors import CORSMiddleware
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # tighten to your real domain once you deploy the frontend
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 SUPABASE_URL = os.environ["SUPABASE_URL"]
 SUPABASE_SERVICE_KEY = os.environ["SUPABASE_SERVICE_KEY"]
 sb: Client = create_client(SUPABASE_URL, SUPABASE_SERVICE_KEY)
