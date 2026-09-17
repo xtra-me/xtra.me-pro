@@ -276,3 +276,19 @@ def daily_brief(body: DailyBriefRequest, user_id: str = Depends(get_user_id)):
 @app.get("/health")
 def health():
     return {"status": "ok"}
+
+
+# ---------- SCHEDULED JOB ENDPOINTS (call these from cron-job.org) ----------
+
+@app.post("/jobs/morning-email", dependencies=[Depends(check_key)])
+def job_morning_email():
+    import email_job
+    email_job.run("morning")
+    return {"status": "sent"}
+
+
+@app.post("/jobs/daytime-email", dependencies=[Depends(check_key)])
+def job_daytime_email():
+    import email_job
+    email_job.run("daytime")
+    return {"status": "sent"}
