@@ -238,7 +238,7 @@ def chat(body: ChatMessage, user_id: str = Depends(get_user_id)):
     }).execute()
 
     completion = client.chat.completions.create(
-        model="llama-3.3-70b-versatile",
+        model="openai/gpt-oss-20b",
         messages=[
             {"role": "system", "content": SYSTEM_PROMPT + "\n\nUser context:\n" + context},
             {"role": "user", "content": body.content},
@@ -265,7 +265,7 @@ def daily_brief(body: DailyBriefRequest, user_id: str = Depends(get_user_id)):
     client = Groq(api_key=body.groq_api_key)
 
     completion = client.chat.completions.create(
-        model="llama-3.3-70b-versatile",
+        model="openai/gpt-oss-20b",
         messages=[
             {"role": "system", "content": SYSTEM_PROMPT},
             {"role": "user", "content": f"Here is my context:\n{context}\n\n"

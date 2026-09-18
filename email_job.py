@@ -72,7 +72,7 @@ def run(mode: str):
             subject = "Quick check-in"
 
         completion = client.chat.completions.create(
-            model="llama-3.3-70b-versatile",
+            model="openai/gpt-oss-20b",
             messages=[{"role": "user", "content": prompt}],
         )
         body_text = completion.choices[0].message.content
