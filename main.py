@@ -133,6 +133,27 @@ def convert_pitch(pitch_id: str, body: ConvertPitch, user_id: str = Depends(get_
     return project
 
 
+class AssignMember(BaseModel):
+    project_id: str
+    org_member_id: str
+    step_id: Optional[str] = None  # null = whole-project assignee
+
+
+@app.post("/assignments", dependencies=[Depends(check_key)])
+def assign_member(body: AssignMember, user_id: str = Depends(get_user_id)):
+    res = sb.table("project_assignees").insert({
+        "project_id": body.project_id,
+        "step_id": body.step_id,
+        "org_member_id": body.org_member_id,
+    }).execute()
+    return res.data[0]
+
+
+@app.get("/projects/{project_id}/assignees", dependencies=[Depends(check_key)])
+def list_assignees(project_id: str, user_id: str = Depends(get_user_id)):
+    return sb.table("project_assignees").select("*").eq("project_id", project_id).execute().data
+
+
 # ---------- PROJECTS / STEPS ----------
 
 @app.get("/orgs/{org_id}/projects", dependencies=[Depends(check_key)])
@@ -194,36 +215,53 @@ class ChatMessage(BaseModel):
 
 def get_member_context(org_member_id: str) -> str:
     member = sb.table("org_members").select("*").eq("id", org_member_id).single().execute().data
+    org_id = member["org_id"]
+
     assignments = sb.table("project_assignees").select(
         "*, project_steps(title, due_date, priority, status), projects(title, color)"
     ).eq("org_member_id", org_member_id).execute().data
     overrides = sb.table("availability_overrides").select("*").eq(
         "org_member_id", org_member_id
     ).gte("end_date", str(date.today())).execute().data
+    all_projects = sb.table("projects").select(
+        "title, start_date, due_date, project_steps(title, due_date, priority, status)"
+    ).eq("org_id", org_id).execute().data
 
     lines = [f"Work schedule: {member.get('work_schedule')}", f"Timezone: {member.get('timezone')}"]
     if overrides:
         lines.append("Unavailable periods: " + "; ".join(
             f"{o['start_date']} to {o['end_date']} ({o.get('reason','no reason given')})" for o in overrides
         ))
-    lines.append("Assigned steps:")
-    for a in assignments:
-        step = a.get("project_steps")
-        proj = a.get("projects")
-        if step:
-            lines.append(f"- [{proj['title']}] {step['title']} — due {step['due_date']}, "
-                         f"priority {step['priority']}, status {step['status']}")
+
+    lines.append("\nSteps assigned to this specific user (their priority focus):")
+    if assignments:
+        for a in assignments:
+            step = a.get("project_steps")
+            proj = a.get("projects")
+            if step:
+                lines.append(f"- [{proj['title']}] {step['title']} — due {step['due_date']}, "
+                             f"priority {step['priority']}, status {step['status']}")
+    else:
+        lines.append("- None assigned yet.")
+
+    lines.append("\nAll projects in the organization (for context/awareness, not necessarily this user's work):")
+    for p in all_projects:
+        lines.append(f"- {p['title']} ({p['start_date']} to {p['due_date']})")
+        for s in p.get("project_steps", []):
+            lines.append(f"    · {s['title']} — due {s['due_date']}, priority {s['priority']}, status {s['status']}")
+
     return "\n".join(lines)
 
 
 SYSTEM_PROMPT = (
     "You are AXEL, a warm but efficient personal work assistant embedded in a team "
-    "project planning app. You help one individual user plan their day/week, "
-    "respecting their stated free time and any temporary unavailability. Prioritize "
-    "by due date and user-set priority. If the user says they can't finish something "
-    "on time, ask whether they want you to notify other members or suggest "
-    "reassignment — never do either without their confirmation. Keep responses "
-    "concise and actionable."
+    "project planning app. You can see all projects in the user's organization for "
+    "awareness, but you should prioritize planning around the steps specifically "
+    "assigned to this individual user. Respect their stated free time and any "
+    "temporary unavailability. Prioritize by due date and user-set priority. If the "
+    "user says they can't finish something on time, ask whether they want you to "
+    "notify other members or suggest reassignment — never do either without their "
+    "confirmation. Keep responses concise and actionable."
 )
 
 
