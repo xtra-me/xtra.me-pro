@@ -16,6 +16,16 @@
 
 <!-- ENTRIES GO BELOW THIS LINE -->
 
+### [2026-10-13] Phase 3 — Team Management, Magic Join Links & Substep Assignments
+- **Files changed:** `main.py`, `c:\Users\ACER\Downloads\index.html`, `migration_phase3_team.sql`, `_agent_context/` docs
+- **What changed:**
+  - **Backend:** Added endpoints for generating and listing org/project invites (`POST /orgs/{id}/invites`, `GET /invites/{code}`), accepting magic join links (`POST /invites/{code}/accept`), direct adding by email (`POST /orgs/{id}/members/add-by-email`), updating member roles, removing members, dynamic step & substep creation/deletion, and substep assignment.
+  - **Database:** Added `migration_phase3_team.sql` with `invites`, `project_collaborators`, `substep_id` on `project_assignees`, and member identification fields.
+  - **Frontend:** Added "Team & Invites" view with shareable invite link generator, direct email adder, member role controls, and active workload counts. Added "Manage Tasks & Assignments" modal on project cards with granular step and sub-step assignment dropdowns, plus a "🎯 My Tasks Only" project filter.
+- **Why:** User requested real member / consultant invite links, in-app identification, and fine-grained task assignment down to sub-steps.
+- **Proposal ref:** Approved by user (2026-10-13 session)
+
+
 ### [2026-10-13] Full rebuild — YouTube phase workflow + UI overhaul
 - **Files changed:** `c:\Users\ACER\Downloads\index.html` (full rewrite ~700 lines), `main.py` (5 additions), `migration_phase2.sql` (new), `_agent_context/` docs updated
 - **What changed:**

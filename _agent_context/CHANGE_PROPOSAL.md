@@ -41,9 +41,9 @@ Waiting for your approval before proceeding. Reply "yes", "no", or provide feedb
 
 ## 🟢 Approved Proposals Archive
 
-<!-- Move approved proposals here after user says yes -->
-
-*(none yet)*
+### [2026-10-13] Member & Consultant Invitations (Link/Direct) + Step/Sub-step Task Assignment
+- **Summary:** Added shareable magic join links, direct email invites, Team view, granular step and sub-step task assignment modal, and "My Tasks Only" project filter.
+- **Status:** Approved and Implemented.
 
 ---
 

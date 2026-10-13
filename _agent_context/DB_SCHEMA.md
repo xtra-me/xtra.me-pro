@@ -82,8 +82,32 @@
 |---|---|---|
 | id | uuid | PK |
 | project_id | uuid | FK → projects |
-| step_id | uuid | FK → project_steps (nullable = whole-project assignee) |
+| step_id | uuid | FK → project_steps (nullable) |
+| substep_id | uuid | FK → project_substeps (nullable for granular task assignment) |
 | org_member_id | uuid | FK → org_members |
+
+### `invites`
+| Column | Type | Notes |
+|---|---|---|
+| id | uuid | PK |
+| code | text | Unique short invite code |
+| org_id | uuid | FK → orgs |
+| project_id | uuid | FK → projects (nullable) |
+| role | text | e.g. "editor", "scriptwriter", "consultant" |
+| type | text | "org" or "project" |
+| created_by | uuid | FK → auth.users |
+| is_active | bool | Active flag |
+| created_at | timestamptz | |
+
+### `project_collaborators`
+| Column | Type | Notes |
+|---|---|---|
+| id | uuid | PK |
+| project_id | uuid | FK → projects |
+| user_id | uuid | FK → auth.users |
+| user_email | text | |
+| role | text | Default "consultant" |
+| created_at | timestamptz | |
 
 ### `delay_reports`
 | Column | Type | Notes |

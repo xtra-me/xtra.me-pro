@@ -13,7 +13,7 @@ app = FastAPI(title="Team Project App API")
 from fastapi.middleware.cors import CORSMiddleware
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # tighten to your real domain once you deploy the frontend
+    allow_origins=["*"],  # Supports live Cloudflare Worker, localhost, etc.
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -31,27 +31,33 @@ def check_key(x_api_key: str = Header(...)):
         raise HTTPException(401, "Invalid API key")
 
 
-def get_user_id(authorization: str = Header(...)) -> str:
+def get_user_info(authorization: str = Header(...)) -> dict:
     # Expects: "Bearer <supabase_jwt>"
     token = authorization.replace("Bearer ", "")
     user = sb.auth.get_user(token)
     if not user or not user.user:
         raise HTTPException(401, "Invalid session")
-    return user.user.id
+    return {"id": user.user.id, "email": user.user.email}
 
 
-# ---------- ORGS ----------
+def get_user_id(authorization: str = Header(...)) -> str:
+    return get_user_info(authorization)["id"]
+
+
+# ---------- ORGS & MEMBERS ----------
 
 class CreateOrg(BaseModel):
     name: str
 
 
 @app.post("/orgs", dependencies=[Depends(check_key)])
-def create_org(body: CreateOrg, user_id: str = Depends(get_user_id)):
+def create_org(body: CreateOrg, user_info: dict = Depends(get_user_info)):
+    user_id = user_info["id"]
+    user_email = user_info["email"]
     org = sb.table("orgs").insert({"name": body.name, "owner_id": user_id}).execute()
     org_id = org.data[0]["id"]
     sb.table("org_members").insert({
-        "org_id": org_id, "user_id": user_id, "role": "owner"
+        "org_id": org_id, "user_id": user_id, "role": "owner", "user_email": user_email
     }).execute()
     return org.data[0]
 
@@ -62,19 +68,144 @@ def list_members(org_id: str, user_id: str = Depends(get_user_id)):
     return res.data
 
 
+class CreateInvite(BaseModel):
+    role: str = "member"
+    project_id: Optional[str] = None
+    type: str = "org"  # "org" or "project"
+
+
+@app.post("/orgs/{org_id}/invites", dependencies=[Depends(check_key)])
+def create_invite(org_id: str, body: CreateInvite, user_id: str = Depends(get_user_id)):
+    code = uuid.uuid4().hex[:8]
+    res = sb.table("invites").insert({
+        "code": code,
+        "org_id": org_id,
+        "project_id": body.project_id,
+        "role": body.role,
+        "type": body.type,
+        "created_by": user_id,
+        "is_active": True
+    }).execute()
+    return res.data[0]
+
+
+@app.get("/orgs/{org_id}/invites", dependencies=[Depends(check_key)])
+def list_invites(org_id: str, user_id: str = Depends(get_user_id)):
+    return sb.table("invites").select("*").eq("org_id", org_id).eq("is_active", True).execute().data
+
+
+@app.get("/invites/{code}")
+def get_invite_info(code: str):
+    inv = sb.table("invites").select("*, orgs(name), projects(title)").eq("code", code).eq("is_active", True).single().execute().data
+    if not inv:
+        raise HTTPException(404, "Invite code not found or expired")
+    return inv
+
+
+@app.post("/invites/{code}/accept", dependencies=[Depends(check_key)])
+def accept_invite(code: str, user_info: dict = Depends(get_user_info)):
+    inv = sb.table("invites").select("*").eq("code", code).eq("is_active", True).single().execute().data
+    if not inv:
+        raise HTTPException(404, "Invite code not found or expired")
+
+    user_id = user_info["id"]
+    user_email = user_info["email"]
+    org_id = inv["org_id"]
+
+    # Check if already in org_members
+    existing = sb.table("org_members").select("*").eq("org_id", org_id).eq("user_id", user_id).execute().data
+    if not existing:
+        member = sb.table("org_members").insert({
+            "org_id": org_id,
+            "user_id": user_id,
+            "role": inv["role"],
+            "user_email": user_email
+        }).execute().data[0]
+    else:
+        member = existing[0]
+
+    # If project consultant invite:
+    if inv.get("project_id"):
+        try:
+            sb.table("project_collaborators").insert({
+                "project_id": inv["project_id"],
+                "user_id": user_id,
+                "user_email": user_email,
+                "role": inv.get("role", "consultant")
+            }).execute()
+        except Exception:
+            pass
+
+    return {
+        "status": "joined",
+        "org_id": org_id,
+        "member": member,
+        "role": inv["role"],
+        "project_id": inv.get("project_id")
+    }
+
+
+class AddMemberByEmail(BaseModel):
+    email: str
+    role: str = "member"
+    project_id: Optional[str] = None
+
+
+@app.post("/orgs/{org_id}/members/add-by-email", dependencies=[Depends(check_key)])
+def add_member_by_email(org_id: str, body: AddMemberByEmail, user_id: str = Depends(get_user_id)):
+    code = uuid.uuid4().hex[:8]
+    inv = sb.table("invites").insert({
+        "code": code,
+        "org_id": org_id,
+        "project_id": body.project_id,
+        "role": body.role,
+        "type": "project" if body.project_id else "org",
+        "created_by": user_id,
+        "is_active": True
+    }).execute().data[0]
+    return {"message": "Invite created for email", "code": code, "role": body.role, "invite": inv}
+
+
+@app.patch("/orgs/{org_id}/members/{member_id}", dependencies=[Depends(check_key)])
+def update_member_role(org_id: str, member_id: str, body: dict, user_id: str = Depends(get_user_id)):
+    role = body.get("role")
+    if not role:
+        raise HTTPException(400, "Role is required")
+    res = sb.table("org_members").update({"role": role}).eq("id", member_id).eq("org_id", org_id).execute()
+    return res.data[0] if res.data else {"status": "updated"}
+
+
+@app.delete("/orgs/{org_id}/members/{member_id}", dependencies=[Depends(check_key)])
+def remove_member(org_id: str, member_id: str, user_id: str = Depends(get_user_id)):
+    sb.table("org_members").delete().eq("id", member_id).eq("org_id", org_id).execute()
+    return {"status": "removed"}
+
+
 # ---------- IDEA PITCHES ----------
 
 class CreatePitch(BaseModel):
     org_id: str
     title: str
     description: Optional[str] = None
+    video_type: Optional[str] = None
+    target_audience: Optional[str] = None
+    requirements: Optional[str] = None
+    target_start_date: Optional[date] = None
+    target_end_date: Optional[date] = None
 
 
 @app.post("/pitches", dependencies=[Depends(check_key)])
 def create_pitch(body: CreatePitch, user_id: str = Depends(get_user_id)):
     res = sb.table("idea_pitches").insert({
-        "org_id": body.org_id, "title": body.title,
-        "description": body.description, "created_by": user_id
+        "org_id": body.org_id,
+        "title": body.title,
+        "description": body.description,
+        "video_type": body.video_type,
+        "target_audience": body.target_audience,
+        "requirements": body.requirements,
+        "target_start_date": str(body.target_start_date) if body.target_start_date else None,
+        "target_end_date": str(body.target_end_date) if body.target_end_date else None,
+        "created_by": user_id
     }).execute()
     return res.data[0]
 
@@ -141,37 +272,60 @@ def convert_pitch(pitch_id: str, body: ConvertPitch, user_id: str = Depends(get_
     return project
 
 
+# ---------- ASSIGNMENTS (STEPS & SUBSTEPS) ----------
+
 class AssignMember(BaseModel):
     project_id: str
     org_member_id: str
     step_id: Optional[str] = None  # null = whole-project assignee
+    substep_id: Optional[str] = None
 
 
 @app.post("/assignments", dependencies=[Depends(check_key)])
 def assign_member(body: AssignMember, user_id: str = Depends(get_user_id)):
-    res = sb.table("project_assignees").insert({
+    # Check if duplicate assignment exists
+    query = sb.table("project_assignees").select("*").eq("project_id", body.project_id).eq("org_member_id", body.org_member_id)
+    if body.step_id:
+        query = query.eq("step_id", body.step_id)
+    if body.substep_id:
+        query = query.eq("substep_id", body.substep_id)
+    existing = query.execute().data
+    if existing:
+        return existing[0]
+
+    payload = {
         "project_id": body.project_id,
-        "step_id": body.step_id,
         "org_member_id": body.org_member_id,
-    }).execute()
+        "step_id": body.step_id,
+    }
+    if body.substep_id:
+        payload["substep_id"] = body.substep_id
+
+    res = sb.table("project_assignees").insert(payload).execute()
     return res.data[0]
+
+
+@app.delete("/assignments/{assignment_id}", dependencies=[Depends(check_key)])
+def delete_assignment(assignment_id: str, user_id: str = Depends(get_user_id)):
+    sb.table("project_assignees").delete().eq("id", assignment_id).execute()
+    return {"status": "deleted"}
 
 
 @app.get("/projects/{project_id}/assignees", dependencies=[Depends(check_key)])
 def list_assignees(project_id: str, user_id: str = Depends(get_user_id)):
-    return sb.table("project_assignees").select("*").eq("project_id", project_id).execute().data
+    return sb.table("project_assignees").select("*, org_members(id, user_id, user_email, role, display_name)").eq("project_id", project_id).execute().data
 
 
-# ---------- PROJECTS / STEPS ----------
+# ---------- PROJECTS / STEPS / SUBSTEPS ----------
 
 @app.get("/orgs/{org_id}/projects", dependencies=[Depends(check_key)])
 def list_projects(org_id: str, user_id: str = Depends(get_user_id)):
-    return sb.table("projects").select("*, current_phase, project_steps(*)").eq("org_id", org_id).execute().data
+    return sb.table("projects").select("*, current_phase, project_steps(*, project_substeps(*)), project_assignees(*, org_members(id, user_email, role, display_name))").eq("org_id", org_id).execute().data
 
 
 @app.get("/projects/{project_id}", dependencies=[Depends(check_key)])
 def get_project(project_id: str, user_id: str = Depends(get_user_id)):
-    return sb.table("projects").select("*, project_steps(*, project_substeps(*))").eq("id", project_id).single().execute().data
+    return sb.table("projects").select("*, project_steps(*, project_substeps(*)), project_assignees(*, org_members(id, user_email, role, display_name))").eq("id", project_id).single().execute().data
 
 
 class AdvancePhase(BaseModel):
@@ -183,8 +337,29 @@ def advance_phase(project_id: str, user_id: str = Depends(get_user_id)):
     project = sb.table("projects").select("current_phase").eq("id", project_id).single().execute().data
     if not project:
         raise HTTPException(404, "Project not found")
-    new_phase = min(project["current_phase"] + 1, 5)
+    new_phase = min((project.get("current_phase") or 1) + 1, 5)
     res = sb.table("projects").update({"current_phase": new_phase}).eq("id", project_id).execute()
+    return res.data[0]
+
+
+class CreateStep(BaseModel):
+    title: str
+    priority: int = 0
+    due_date: Optional[date] = None
+    order_index: Optional[int] = 0
+
+
+@app.post("/projects/{project_id}/steps", dependencies=[Depends(check_key)])
+def add_step(project_id: str, body: CreateStep, user_id: str = Depends(get_user_id)):
+    payload = {
+        "project_id": project_id,
+        "title": body.title,
+        "priority": body.priority,
+        "order_index": body.order_index or 0,
+        "due_date": str(body.due_date) if body.due_date else None,
+        "status": "pending"
+    }
+    res = sb.table("project_steps").insert(payload).execute()
     return res.data[0]
 
 
@@ -203,6 +378,29 @@ def update_step(step_id: str, body: UpdateStep, user_id: str = Depends(get_user_
     return res.data[0]
 
 
+@app.delete("/steps/{step_id}", dependencies=[Depends(check_key)])
+def delete_step(step_id: str, user_id: str = Depends(get_user_id)):
+    sb.table("project_steps").delete().eq("id", step_id).execute()
+    return {"status": "deleted"}
+
+
+class CreateSubstep(BaseModel):
+    title: str
+    order_index: Optional[int] = 0
+
+
+@app.post("/steps/{step_id}/substeps", dependencies=[Depends(check_key)])
+def add_substep(step_id: str, body: CreateSubstep, user_id: str = Depends(get_user_id)):
+    payload = {
+        "step_id": step_id,
+        "title": body.title,
+        "order_index": body.order_index or 0,
+        "is_checked": False
+    }
+    res = sb.table("project_substeps").insert(payload).execute()
+    return res.data[0]
+
+
 class ToggleSubstep(BaseModel):
     is_checked: bool
 
@@ -211,6 +409,12 @@ class ToggleSubstep(BaseModel):
 def toggle_substep(substep_id: str, body: ToggleSubstep, user_id: str = Depends(get_user_id)):
     res = sb.table("project_substeps").update({"is_checked": body.is_checked}).eq("id", substep_id).execute()
     return res.data[0]
+
+
+@app.delete("/substeps/{substep_id}", dependencies=[Depends(check_key)])
+def delete_substep(substep_id: str, user_id: str = Depends(get_user_id)):
+    sb.table("project_substeps").delete().eq("id", substep_id).execute()
+    return {"status": "deleted"}
 
 
 # ---------- DELAY / REASSIGN ----------
