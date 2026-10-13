@@ -99,6 +99,10 @@ class ConvertPitch(BaseModel):
     start_date: date
     due_date: date
     steps: List[dict] = []  # [{title, due_date, priority, substeps:[str,...]}]
+    current_phase: int = 1
+    video_type: Optional[str] = None
+    target_audience: Optional[str] = None
+    requirements: Optional[str] = None
 
 
 @app.post("/pitches/{pitch_id}/convert", dependencies=[Depends(check_key)])
@@ -113,6 +117,10 @@ def convert_pitch(pitch_id: str, body: ConvertPitch, user_id: str = Depends(get_
         "extra_details": body.extra_details, "color": body.color,
         "start_date": str(body.start_date), "due_date": str(body.due_date),
         "created_by": user_id,
+        "current_phase": body.current_phase,
+        "video_type": body.video_type,
+        "target_audience": body.target_audience,
+        "requirements": body.requirements,
     }).execute().data[0]
 
     for i, step in enumerate(body.steps):
@@ -158,7 +166,26 @@ def list_assignees(project_id: str, user_id: str = Depends(get_user_id)):
 
 @app.get("/orgs/{org_id}/projects", dependencies=[Depends(check_key)])
 def list_projects(org_id: str, user_id: str = Depends(get_user_id)):
-    return sb.table("projects").select("*, project_steps(*)").eq("org_id", org_id).execute().data
+    return sb.table("projects").select("*, current_phase, project_steps(*)").eq("org_id", org_id).execute().data
+
+
+@app.get("/projects/{project_id}", dependencies=[Depends(check_key)])
+def get_project(project_id: str, user_id: str = Depends(get_user_id)):
+    return sb.table("projects").select("*, project_steps(*, project_substeps(*))").eq("id", project_id).single().execute().data
+
+
+class AdvancePhase(BaseModel):
+    pass
+
+
+@app.post("/projects/{project_id}/advance-phase", dependencies=[Depends(check_key)])
+def advance_phase(project_id: str, user_id: str = Depends(get_user_id)):
+    project = sb.table("projects").select("current_phase").eq("id", project_id).single().execute().data
+    if not project:
+        raise HTTPException(404, "Project not found")
+    new_phase = min(project["current_phase"] + 1, 5)
+    res = sb.table("projects").update({"current_phase": new_phase}).eq("id", project_id).execute()
+    return res.data[0]
 
 
 class UpdateStep(BaseModel):
